@@ -21,17 +21,20 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Android SDK & NDK
+      - name: Setup Android SDK (without legacy tools)
         uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
       - name: Install NDK and CMake
         run: |
-          sdkmanager "ndk;26.1.10909125" "cmake;3.22.1"
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;26.1.10909125" "cmake;3.22.1"
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build Debug APK (universal / armeabi-v7a)
+      - name: Build Debug APK
         run: ./gradlew assembleDebug
 
       - name: Upload TV APK artifact
