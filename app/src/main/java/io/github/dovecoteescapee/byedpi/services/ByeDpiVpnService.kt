@@ -51,9 +51,10 @@ class ByeDpiVpnService : LifecycleVpnService() {
         super.onStartCommand(intent, flags, startId)
         return when (val action = intent?.action) {
             START_ACTION -> {
+                startForeground()
                 lifecycleScope.launch { start() }
                 START_STICKY
-            }
+     }
 
             STOP_ACTION -> {
                 lifecycleScope.launch { stop() }
@@ -269,10 +270,10 @@ class ByeDpiVpnService : LifecycleVpnService() {
             ByeDpiVpnService::class.java,
         )
 
-    private fun createBuilder(dns: String, ipv6: Boolean): Builder {
+   private fun createBuilder(dns: String, ipv6: Boolean): Builder {
         Log.d(TAG, "DNS: $dns")
         val builder = Builder()
-        builder.setSession("ByeDPI")
+        builder.setSession("ByeDPI TV")
         builder.setConfigureIntent(
             PendingIntent.getActivity(
                 this,
@@ -297,8 +298,33 @@ class ByeDpiVpnService : LifecycleVpnService() {
             builder.setMetered(false)
         }
 
-        builder.addDisallowedApplication(applicationContext.packageName)
+        val onlyYoutube = getPreferences().getBoolean("tv_only_youtube", true)
+        var allowedCount = 0
+
+        if (onlyYoutube) {
+            val youtubePackages = listOf(
+                "com.google.android.youtube.tv",
+                "com.google.android.youtube.tvkids",
+                "com.teamsmart.videomanager.tv",
+                "com.liskovsoft.smarttubetv.beta",
+                "com.liskovsoft.videomanager",
+                "com.google.android.youtube"
+            )
+            for (pkg in youtubePackages) {
+                try {
+                    packageManager.getPackageInfo(pkg, 0)
+                    builder.addAllowedApplication(pkg)
+                    allowedCount++
+                    Log.i(TAG, "Added allowed TV app: $pkg")
+                } catch (_: Exception) {
+                    // Пакет не установлен на этом ТВ
+                }
+            }
+        }
+
+        if (allowedCount == 0) {
+            builder.addDisallowedApplication(applicationContext.packageName)
+        }
 
         return builder
     }
-}
