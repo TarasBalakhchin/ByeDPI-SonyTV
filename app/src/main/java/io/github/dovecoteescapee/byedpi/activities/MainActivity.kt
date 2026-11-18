@@ -7,115 +7,63 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
-import android.view.Menu
-import android.view.MenuItem
+import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.lifecycleScope
 import io.github.dovecoteescapee.byedpi.R
 import io.github.dovecoteescapee.byedpi.data.*
-import io.github.dovecoteescapee.byedpi.fragments.MainSettingsFragment
 import io.github.dovecoteescapee.byedpi.databinding.ActivityMainBinding
 import io.github.dovecoteescapee.byedpi.services.ServiceManager
 import io.github.dovecoteescapee.byedpi.services.appStatus
 import io.github.dovecoteescapee.byedpi.utility.*
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import java.io.IOException
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
 
+    data class TvPreset(val title: String, val args: String)
+
     companion object {
         private val TAG: String = MainActivity::class.java.simpleName
 
-        private fun collectLogs(): String? =
-            try {
-                Runtime.getRuntime()
-                    .exec("logcat *:D -d")
-                    .inputStream.bufferedReader()
-                    .use { it.readText() }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to collect logs", e)
-                null
-            }
+        val TV_PRESETS = listOf(
+            TvPreset("1/5: Базовая (Split + OOB)", "-Ku -a1 -An -o1 -At,r,s -d1"),
+            TvPreset("2/5: Агрессивный TLS + SNI", "-Ku -a1 -An -s1 -o1 -At,r,s -d1 -f-1 -r1+s -As"),
+            TvPreset("3/5: Десинхронизация TTL=3", "-Ku -a1 -An -o1 -At,r,s -t3 -f-1 -r1+s"),
+            TvPreset("4/5: Модифицированный Disorder", "-Ku -a1 -An -d1 -s1+s -At,r,s"),
+            TvPreset("5/5: Максимальный обход", "-Ku -a1 -An -o1 -d1 -s1 -f-1 -t4 -At,r,s -As")
+        )
     }
 
     private val vpnRegister =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
             if (it.resultCode == RESULT_OK) {
+                binding.adbHintText.visibility = View.GONE
                 ServiceManager.start(this, Mode.VPN)
             } else {
-                Toast.makeText(this, R.string.vpn_permission_denied, Toast.LENGTH_SHORT).show()
+                showSonyVpnHint()
+                Toast.makeText(this, "Нет разрешения на VPN", Toast.LENGTH_LONG).show()
                 updateStatus()
-            }
-        }
-
-    private val logsRegister =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-            lifecycleScope.launch(Dispatchers.IO) {
-                val logs = collectLogs()
-
-                if (logs == null) {
-                    Toast.makeText(
-                        this@MainActivity,
-                        R.string.logs_failed,
-                        Toast.LENGTH_SHORT
-                    ).show()
-                } else {
-                    val uri = it.data?.data ?: run {
-                        Log.e(TAG, "No data in result")
-                        return@launch
-                    }
-                    contentResolver.openOutputStream(uri)?.use {
-                        try {
-                            it.write(logs.toByteArray())
-                        } catch (e: IOException) {
-                            Log.e(TAG, "Failed to save logs", e)
-                        }
-                    } ?: run {
-                        Log.e(TAG, "Failed to open output stream")
-                    }
-                }
             }
         }
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            Log.d(TAG, "Received intent: ${intent?.action}")
-
-            if (intent == null) {
-                Log.w(TAG, "Received null intent")
-                return
-            }
-
-            val senderOrd = intent.getIntExtra(SENDER, -1)
-            val sender = Sender.entries.getOrNull(senderOrd)
-            if (sender == null) {
-                Log.w(TAG, "Received intent with unknown sender: $senderOrd")
-                return
-            }
-
-            when (val action = intent.action) {
-                STARTED_BROADCAST,
-                STOPPED_BROADCAST -> updateStatus()
-
+            if (intent == null) return
+            when (intent.action) {
+                STARTED_BROADCAST, STOPPED_BROADCAST -> updateStatus()
                 FAILED_BROADCAST -> {
-                    Toast.makeText(
-                        context,
-                        getString(R.string.failed_to_start, sender.name),
-                        Toast.LENGTH_SHORT,
-                    ).show()
+                    Toast.makeText(context, "Ошибка запуска туннеля", Toast.LENGTH_SHORT).show()
                     updateStatus()
                 }
-
-                else -> Log.w(TAG, "Unknown action: $action")
             }
         }
     }
@@ -125,6 +73,9 @@ class MainActivity : AppCompatActivity() {
 
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        // При первом запуске включаем режим аргументов командной строки и ставим 1-й пресет
+        initTvDefaultsIfNeeded()
 
         val intentFilter = IntentFilter().apply {
             addAction(STARTED_BROADCAST)
@@ -147,22 +98,40 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val theme = getPreferences()
-            .getString("app_theme", null)
-        MainSettingsFragment.setTheme(theme ?: "system")
+        binding.presetButton.setOnClickListener {
+            cyclePreset()
+        }
+
+        binding.ytOnlyButton.setOnClickListener {
+            toggleYoutubeOnly()
+        }
+
+        binding.autostartButton.setOnClickListener {
+            toggleAutostart()
+        }
+
+        binding.settingsButton.setOnClickListener {
+            val (status, _) = appStatus
+            if (status == AppStatus.Halted) {
+                startActivity(Intent(this, SettingsActivity::class.java))
+            } else {
+                Toast.makeText(this, "Сначала отключите туннель", Toast.LENGTH_SHORT).show()
+            }
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) != PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
+
+        binding.statusButton.requestFocus()
     }
 
     override fun onResume() {
         super.onResume()
+        updateTvControls()
         updateStatus()
     }
 
@@ -171,54 +140,103 @@ class MainActivity : AppCompatActivity() {
         unregisterReceiver(receiver)
     }
 
-    override fun onCreateOptionsMenu(menu: Menu?): Boolean {
-        menuInflater.inflate(R.menu.menu_main, menu)
-        return true
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        val (status, _) = appStatus
-
-        return when (item.itemId) {
-            R.id.action_settings -> {
-                if (status == AppStatus.Halted) {
-                    val intent = Intent(this, SettingsActivity::class.java)
-                    startActivity(intent)
-                } else {
-                    Toast.makeText(this, R.string.settings_unavailable, Toast.LENGTH_SHORT)
-                        .show()
-                }
-                true
-            }
-
-            R.id.action_save_logs -> {
-                val intent =
-                    Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "text/plain"
-                        putExtra(Intent.EXTRA_TITLE, "byedpi.log")
-                    }
-
-                logsRegister.launch(intent)
-                true
-            }
-
-            else -> super.onOptionsItemSelected(item)
+    private fun initTvDefaultsIfNeeded() {
+        val prefs = getPreferences()
+        if (!prefs.getBoolean("tv_initialized", false)) {
+            prefs.edit()
+                .putBoolean("tv_initialized", true)
+                .putBoolean("byedpi_enable_cmd_settings", true)
+                .putInt("tv_preset_index", 0)
+                .putString("byedpi_cmd_args", TV_PRESETS[0].args)
+                .putBoolean("tv_only_youtube", true)
+                .putBoolean("tv_autostart", false)
+                .putBoolean("ipv6_enable", false)
+                .apply()
         }
     }
 
-    private fun start() {
-        when (getPreferences().mode()) {
-            Mode.VPN -> {
-                val intentPrepare = VpnService.prepare(this)
-                if (intentPrepare != null) {
-                    vpnRegister.launch(intentPrepare)
-                } else {
-                    ServiceManager.start(this, Mode.VPN)
-                }
-            }
+    private fun cyclePreset() {
+        val prefs = getPreferences()
+        val nextIndex = (prefs.getInt("tv_preset_index", 0) + 1) % TV_PRESETS.size
+        val preset = TV_PRESETS[nextIndex]
 
-            Mode.Proxy -> ServiceManager.start(this, Mode.Proxy)
+        prefs.edit()
+            .putBoolean("byedpi_enable_cmd_settings", true)
+            .putInt("tv_preset_index", nextIndex)
+            .putString("byedpi_cmd_args", preset.args)
+            .apply()
+
+        updateTvControls()
+
+        // Если VPN уже запущен — перезапускаем его с новой стратегией
+        if (appStatus.first == AppStatus.Running) {
+            Toast.makeText(this, "Применяю стратегию ${nextIndex + 1}...", Toast.LENGTH_SHORT).show()
+            stop()
+            Handler(Looper.getMainLooper()).postDelayed({ start() }, 600)
+        }
+    }
+
+    private fun toggleYoutubeOnly() {
+        val prefs = getPreferences()
+        val newValue = !prefs.getBoolean("tv_only_youtube", true)
+        prefs.edit().putBoolean("tv_only_youtube", newValue).apply()
+        updateTvControls()
+
+        if (appStatus.first == AppStatus.Running) {
+            stop()
+            Handler(Looper.getMainLooper()).postDelayed({ start() }, 600)
+        }
+    }
+
+    private fun toggleAutostart() {
+        val prefs = getPreferences()
+        val newValue = !prefs.getBoolean("tv_autostart", false)
+        prefs.edit().putBoolean("tv_autostart", newValue).apply()
+        updateTvControls()
+    }
+
+    private fun updateTvControls() {
+        val prefs = getPreferences()
+        val index = prefs.getInt("tv_preset_index", 0).coerceIn(0, TV_PRESETS.lastIndex)
+        val preset = TV_PRESETS[index]
+
+        binding.presetButton.text = "Стратегия ${preset.title}"
+        binding.presetArgsText.text = preset.args
+
+        val ytOnly = prefs.getBoolean("tv_only_youtube", true)
+        binding.ytOnlyButton.text = if (ytOnly) {
+            "Трафик: Только YouTube и SmartTube"
+        } else {
+            "Трафик: Весь телевизор"
+        }
+
+        val autostart = prefs.getBoolean("tv_autostart", false)
+        binding.autostartButton.text = if (autostart) {
+            "Автозапуск при включении ТВ: ВКЛ"
+        } else {
+            "Автозапуск при включении ТВ: ВЫКЛ"
+        }
+    }
+
+    private fun showSonyVpnHint() {
+        binding.adbHintText.visibility = View.VISIBLE
+        binding.adbHintText.text =
+            "Если окно запроса VPN не открылось на Sony Bravia, выполните с ПК по ADB:\n" +
+            "adb shell appops set $packageName ACTIVATE_VPN allow"
+    }
+
+    private fun start() {
+        try {
+            val intentPrepare = VpnService.prepare(this)
+            if (intentPrepare != null) {
+                vpnRegister.launch(intentPrepare)
+            } else {
+                binding.adbHintText.visibility = View.GONE
+                ServiceManager.start(this, Mode.VPN)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to prepare VPN", e)
+            showSonyVpnHint()
         }
     }
 
@@ -227,43 +245,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateStatus() {
-        val (status, mode) = appStatus
-
-        Log.i(TAG, "Updating status: $status, $mode")
-
+        val (status, _) = appStatus
         val preferences = getPreferences()
         val proxyIp = preferences.getStringNotNull("byedpi_proxy_ip", "127.0.0.1")
         val proxyPort = preferences.getStringNotNull("byedpi_proxy_port", "1080")
-        binding.proxyAddress.text = getString(R.string.proxy_address, proxyIp, proxyPort)
+        binding.proxyAddress.text = "Локальный прокси: $proxyIp:$proxyPort"
 
         when (status) {
             AppStatus.Halted -> {
-                when (preferences.mode()) {
-                    Mode.VPN -> {
-                        binding.statusText.setText(R.string.vpn_disconnected)
-                        binding.statusButton.setText(R.string.vpn_connect)
-                    }
-
-                    Mode.Proxy -> {
-                        binding.statusText.setText(R.string.proxy_down)
-                        binding.statusButton.setText(R.string.proxy_start)
-                    }
-                }
+                binding.statusText.text = "ОТКЛЮЧЕНО"
+                binding.statusText.setTextColor(Color.parseColor("#F87171"))
+                binding.statusButton.text = "ВКЛЮЧИТЬ YOUTUBE"
                 binding.statusButton.isEnabled = true
             }
 
             AppStatus.Running -> {
-                when (mode) {
-                    Mode.VPN -> {
-                        binding.statusText.setText(R.string.vpn_connected)
-                        binding.statusButton.setText(R.string.vpn_disconnect)
-                    }
-
-                    Mode.Proxy -> {
-                        binding.statusText.setText(R.string.proxy_up)
-                        binding.statusButton.setText(R.string.proxy_stop)
-                    }
-                }
+                binding.statusText.text = "РАБОТАЕТ"
+                binding.statusText.setTextColor(Color.parseColor("#4ADE80"))
+                binding.statusButton.text = "ОТКЛЮЧИТЬ"
                 binding.statusButton.isEnabled = true
             }
         }
