@@ -19,7 +19,6 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import io.github.dovecoteescapee.byedpi.R
 import io.github.dovecoteescapee.byedpi.data.*
 import io.github.dovecoteescapee.byedpi.databinding.ActivityMainBinding
 import io.github.dovecoteescapee.byedpi.services.ServiceManager
@@ -35,10 +34,13 @@ class MainActivity : AppCompatActivity() {
         private val TAG: String = MainActivity::class.java.simpleName
 
         val TV_PRESETS = listOf(
-            TvPreset("1/5: Базовая (Split + OOB)", "-Ku -a1 -An -o1 -At,r,s -d1"),
-            TvPreset("2/5: Агрессивный TLS + SNI", "-Ku -a1 -An -s1 -o1 -At,r,s -d1 -f-1 -r1+s -As"),
-            TvPreset("3/5: Десинхронизация TTL=3", "-Ku -a1 -An -o1 -At,r,s -t3 -f-1 -r1+s"),
-            TvPreset("4/5: Модифицированный Disorder", "-Ku -a1 -An -d1 -s1+s -At,r,s"),
+            TvPreset(
+                "1/5: Телецентр Абакан (Рабочая)",
+                "-d1+s -O1 -s29+s -t 5 -An -Ku -a5 -s443+s -d80+s -d443+s -s80+s -s443+s -d53+s -s53+s"
+            ),
+            TvPreset("2/5: Базовая (Split + OOB)", "-Ku -a1 -An -o1 -At,r,s -d1"),
+            TvPreset("3/5: Агрессивный TLS + SNI", "-Ku -a1 -An -s1 -o1 -At,r,s -d1 -f-1 -r1+s -As"),
+            TvPreset("4/5: Десинхронизация TTL=3", "-Ku -a1 -An -o1 -At,r,s -t3 -f-1 -r1+s"),
             TvPreset("5/5: Максимальный обход", "-Ku -a1 -An -o1 -d1 -s1 -f-1 -t4 -At,r,s -As")
         )
     }
@@ -74,7 +76,6 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // При первом запуске включаем режим аргументов командной строки и ставим 1-й пресет
         initTvDefaultsIfNeeded()
 
         val intentFilter = IntentFilter().apply {
@@ -142,14 +143,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun initTvDefaultsIfNeeded() {
         val prefs = getPreferences()
-        if (!prefs.getBoolean("tv_initialized", false)) {
+        if (!prefs.getBoolean("tv_initialized_v2", false)) {
             prefs.edit()
-                .putBoolean("tv_initialized", true)
+                .putBoolean("tv_initialized_v2", true)
                 .putBoolean("byedpi_enable_cmd_settings", true)
                 .putInt("tv_preset_index", 0)
                 .putString("byedpi_cmd_args", TV_PRESETS[0].args)
-                .putBoolean("tv_only_youtube", true)
-                .putBoolean("tv_autostart", false)
+                .putBoolean("tv_only_youtube", prefs.getBoolean("tv_only_youtube", true))
+                .putBoolean("tv_autostart", prefs.getBoolean("tv_autostart", false))
                 .putBoolean("ipv6_enable", false)
                 .apply()
         }
@@ -168,7 +169,6 @@ class MainActivity : AppCompatActivity() {
 
         updateTvControls()
 
-        // Если VPN уже запущен — перезапускаем его с новой стратегией
         if (appStatus.first == AppStatus.Running) {
             Toast.makeText(this, "Применяю стратегию ${nextIndex + 1}...", Toast.LENGTH_SHORT).show()
             stop()
